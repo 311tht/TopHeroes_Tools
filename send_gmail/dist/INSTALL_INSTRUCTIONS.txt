@@ -1,0 +1,18 @@
+HƯỚNG DẪN CÀI ĐẶT TOPHEROES EMAIL VERIFIER
+
+1. Kéo file TopHeroesEmailVerifier.app vào thư mục Applications
+
+2. Nếu macOS chặn ứng dụng:
+   - Vào System Preferences → Security & Privacy
+   - Nhấp "Open Anyway" bên cạnh TopHeroesEmailVerifier
+   - Hoặc chạy lệnh terminal:
+     sudo xattr -rd com.apple.quarantine /Applications/TopHeroesEmailVerifier.app
+
+3. Dữ liệu tài khoản được lưu tại:
+   ~/Library/Application Support/TopHeroesEmailVerifier/accounts.json
+
+4. Để import tài khoản cũ:
+   - Copy file accounts.json vào thư mục trên
+   - Hoặc thêm tài khoản thủ công trong app
+
+Ứng dụng đã sẵn sàng sử dụng!

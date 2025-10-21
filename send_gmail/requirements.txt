@@ -1,0 +1,23 @@
+# TopHeroes Email Verifier - Requirements
+# Các thư viện cần thiết để chạy ứng dụng
+
+# Thư viện chuẩn của Python (không cần cài đặt)
+# - tkinter (GUI)
+# - imaplib (Gmail IMAP)
+# - email (xử lý email)
+# - re (regex)
+# - json (lưu trữ tài khoản)
+# - os (hệ thống file)
+# - time (thời gian)
+# - datetime (ngày tháng)
+
+# Lưu ý: 
+# - Tất cả thư viện đều có sẵn trong Python chuẩn
+# - Không cần cài đặt thêm package nào
+# - Chỉ cần Python 3.6+ để chạy
+
+# Hướng dẫn sử dụng:
+# 1. Đảm bảo Gmail đã bật 2-Factor Authentication
+# 2. Tạo App Password cho từng tài khoản Gmail
+# 3. Chạy: python email_verifier.py
+

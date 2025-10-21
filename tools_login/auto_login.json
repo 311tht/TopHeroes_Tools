@@ -1,0 +1,52 @@
+[
+  {
+    "action_type": "coordinate",
+    "x": "123",
+    "y": "141",
+    "click_type": "Double Click",
+    "repeat": 1,
+    "delay": 1.0,
+    "move_back": false,
+    "comment": ""
+  },
+  {
+    "action_type": "coordinate",
+    "x": "578",
+    "y": "1036",
+    "click_type": "Click Tr\u00e1i",
+    "repeat": 1,
+    "delay": 1.0,
+    "move_back": false,
+    "comment": ""
+  },
+  {
+    "action_type": "coordinate",
+    "x": "243",
+    "y": "209",
+    "click_type": "Click Tr\u00e1i",
+    "repeat": 1,
+    "delay": 1.0,
+    "move_back": false,
+    "comment": ""
+  },
+  {
+    "action_type": "coordinate",
+    "x": "466",
+    "y": "773",
+    "click_type": "Click Tr\u00e1i",
+    "repeat": 1,
+    "delay": 1.0,
+    "move_back": false,
+    "comment": ""
+  },
+  {
+    "action_type": "coordinate",
+    "x": "314",
+    "y": "474",
+    "click_type": "Click Tr\u00e1i",
+    "repeat": 1,
+    "delay": 1.0,
+    "move_back": false,
+    "comment": ""
+  }
+]

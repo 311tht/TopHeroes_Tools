@@ -1,0 +1,3 @@
+([('TopHeroesEmailVerifier',
+   '/Users/311tht/Game_code/send_gmail/dist/TopHeroesEmailVerifier',
+   'EXECUTABLE')],)
