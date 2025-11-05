@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
 """
 TopHeroes API Catcher - Simple Version
-Sử dụng mitmproxy để bắt API calls
+Uses mitmproxy to capture API calls
 """
 
 import json
-import time
 from datetime import datetime
+from typing import Dict, Any, Optional
 from mitmproxy import http
-import os
+from pathlib import Path
+
+# Common modules
+from common.filters import is_topheroes_api
+from common.config import OUTPUT_DIR, OUTPUT_FILE_PREFIX, OUTPUT_FILE_SUFFIX, SUMMARY_FILE_SUFFIX
+from common.utils import safe_json_parse, truncate_string
+from common.logger import setup_logger
+
+logger = setup_logger(__name__)
+
 
 class TopHeroesCatcher:
     def __init__(self):
         self.api_calls = []
         self.start_time = datetime.now()
+        logger.info("TopHeroes API Catcher initialized")
         
     def request(self, flow: http.HTTPFlow) -> None:
-        """Bắt HTTP request"""
+        """Capture HTTP request"""
         url = flow.request.url.lower()
         
-        # Kiểm tra xem có phải TopHeroes API không
-        if self.is_topheroes_api(url, flow.request.headers):
+        # Check if it's TopHeroes API
+        if is_topheroes_api(url, dict(flow.request.headers)):
             api_data = {
                 "timestamp": datetime.now().isoformat(),
                 "method": flow.request.method,
@@ -32,12 +42,13 @@ class TopHeroesCatcher:
             
             self.api_calls.append(api_data)
             self.print_request(api_data)
+            logger.debug(f"Captured request: {api_data['method']} {api_data['url']}")
     
     def response(self, flow: http.HTTPFlow) -> None:
-        """Bắt HTTP response"""
+        """Capture HTTP response"""
         url = flow.request.url.lower()
         
-        if self.is_topheroes_api(url, flow.request.headers):
+        if is_topheroes_api(url, dict(flow.request.headers)):
             response_data = {
                 "timestamp": datetime.now().isoformat(),
                 "status_code": flow.response.status_code,
@@ -54,89 +65,68 @@ class TopHeroesCatcher:
                     api_call["response"] = response_data
                     break
     
-    def is_topheroes_api(self, url: str, headers: dict) -> bool:
-        """Kiểm tra xem có phải TopHeroes API không"""
-        topheroes_domains = [
-            'topheroes', 'topwar', 'topwarapp', 'game', 'api',
-            'login', 'user', 'player', 'battle', 'mission',
-            'quest', 'reward', 'item', 'shop', 'guild'
-        ]
-        
-        # Kiểm tra URL
-        for domain in topheroes_domains:
-            if domain in url:
-                return True
-        
-        # Kiểm tra User-Agent
-        user_agent = headers.get('User-Agent', '').lower()
-        for domain in topheroes_domains:
-            if domain in user_agent:
-                return True
-        
-        # Kiểm tra Referer
-        referer = headers.get('Referer', '').lower()
-        for domain in topheroes_domains:
-            if domain in referer:
-                return True
-                
-        return False
-    
-    def print_request(self, api_data: dict):
-        """In thông tin request"""
+    def print_request(self, api_data: Dict[str, Any]) -> None:
+        """Print request information"""
         print(f"\n🔍 [{api_data['timestamp']}] {api_data['method']} {api_data['url']}")
         
-        # In headers quan trọng
+        # Print important headers
         important_headers = ['Authorization', 'X-API-Key', 'Content-Type', 'User-Agent', 'Cookie']
         for header in important_headers:
             if header in api_data['headers']:
                 value = api_data['headers'][header]
-                if header == 'Authorization' and len(value) > 50:
-                    value = value[:50] + "..."
+                if header == 'Authorization':
+                    value = truncate_string(value, 50)
                 print(f"   📋 {header}: {value}")
         
-        # In body nếu có
-        if api_data['body']:
-            try:
-                body_json = json.loads(api_data['body'])
-                print(f"   📦 Body: {json.dumps(body_json, indent=2)[:300]}...")
-            except:
-                print(f"   📦 Body: {api_data['body'][:200]}...")
+        # Print body if exists
+        if api_data.get('body'):
+            body_json = safe_json_parse(api_data['body'])
+            if body_json:
+                print(f"   📦 Body: {truncate_string(json.dumps(body_json, indent=2), 300)}")
+            else:
+                print(f"   📦 Body: {truncate_string(api_data['body'], 200)}")
     
-    def print_response(self, response_data: dict):
-        """In thông tin response"""
+    def print_response(self, response_data: Dict[str, Any]) -> None:
+        """Print response information"""
         print(f"   📥 Response: {response_data['status_code']}")
         
-        if response_data['body']:
-            try:
-                body_json = json.loads(response_data['body'])
-                print(f"   📦 Response Body: {json.dumps(body_json, indent=2)[:300]}...")
-            except:
-                print(f"   📦 Response Body: {response_data['body'][:200]}...")
+        if response_data.get('body'):
+            body_json = safe_json_parse(response_data['body'])
+            if body_json:
+                print(f"   📦 Response Body: {truncate_string(json.dumps(body_json, indent=2), 300)}")
+            else:
+                print(f"   📦 Response Body: {truncate_string(response_data['body'], 200)}")
     
-    def save_results(self):
-        """Lưu kết quả"""
+    def save_results(self) -> None:
+        """Save captured API calls to file"""
         if not self.api_calls:
+            logger.info("No API calls captured")
             print("ℹ️  No API calls captured")
             return
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"topheroes_api_calls_{timestamp}.json"
+        filename = OUTPUT_DIR / f"{OUTPUT_FILE_PREFIX}_{timestamp}{OUTPUT_FILE_SUFFIX}"
         
         try:
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(self.api_calls, f, indent=2, ensure_ascii=False)
             
+            logger.info(f"Saved {len(self.api_calls)} API calls to {filename}")
             print(f"\n💾 Saved {len(self.api_calls)} API calls to {filename}")
             
-            # Tạo summary
+            # Create summary
             self.create_summary(filename)
             
-        except Exception as e:
+        except (IOError, OSError) as e:
+            logger.error(f"Error saving results: {e}", exc_info=True)
             print(f"❌ Error saving results: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error saving results: {e}", exc_info=True)
+            raise
     
-    def create_summary(self, filename: str):
-        """Tạo file tóm tắt"""
-        summary_filename = filename.replace('.json', '_summary.txt')
+    def create_summary(self, filename: Path) -> None:
+        """Create summary file"""
+        summary_filename = filename.with_suffix(SUMMARY_FILE_SUFFIX.replace('_', ''))
         
         try:
             with open(summary_filename, 'w', encoding='utf-8') as f:
@@ -183,10 +173,15 @@ class TopHeroesCatcher:
                 for status, count in status_codes.items():
                     f.write(f"  {status}: {count} responses\n")
             
+            logger.info(f"Summary saved to {summary_filename}")
             print(f"📊 Summary saved to {summary_filename}")
             
-        except Exception as e:
+        except (IOError, OSError) as e:
+            logger.error(f"Error creating summary: {e}", exc_info=True)
             print(f"⚠️ Error creating summary: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error creating summary: {e}", exc_info=True)
+            raise
 
 # Tạo instance global
 catcher = TopHeroesCatcher()
@@ -198,7 +193,8 @@ def request(flow: http.HTTPFlow) -> None:
 def response(flow: http.HTTPFlow) -> None:
     catcher.response(flow)
 
-def done():
-    """Được gọi khi mitmproxy dừng"""
+def done() -> None:
+    """Called when mitmproxy stops"""
+    logger.info("Stopping TopHeroes API Catcher")
     catcher.save_results()
     print("👋 TopHeroes API Catcher stopped!")

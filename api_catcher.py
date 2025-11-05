@@ -1,38 +1,50 @@
 #!/usr/bin/env python3
 """
 TopHeroes API Catcher Tool
-Bắt và phân tích API calls từ game TopHeroes
+Capture and analyze API calls from TopHeroes game
 """
 
 import json
-import time
 import threading
 import requests
 import socket
 from datetime import datetime
-from typing import Dict, List, Any
-import os
-import sys
+from typing import Dict, List, Any, Tuple, Optional
+from pathlib import Path
+from contextlib import contextmanager
+
+# Common modules
+from common.filters import is_topheroes_api
+from common.config import (
+    DEFAULT_PROXY_PORT, DEFAULT_PROXY_HOST, REQUEST_TIMEOUT, BUFFER_SIZE,
+    OUTPUT_DIR, OUTPUT_FILE_PREFIX, OUTPUT_FILE_SUFFIX, SUMMARY_FILE_SUFFIX
+)
+from common.utils import safe_json_parse, truncate_string
+from common.logger import setup_logger
+
+logger = setup_logger(__name__)
+
 
 class TopHeroesAPICatcher:
-    def __init__(self, port: int = 8080):
+    def __init__(self, port: int = DEFAULT_PROXY_PORT, host: str = DEFAULT_PROXY_HOST):
         self.port = port
-        self.api_calls = []
+        self.host = host
+        self.api_calls: List[Dict[str, Any]] = []
         self.running = False
-        self.server_socket = None
-        self.clients = []
+        self.server_socket: Optional[socket.socket] = None
         
-    def start_proxy_server(self):
-        """Khởi động proxy server để bắt traffic"""
+    def start_proxy_server(self) -> None:
+        """Start proxy server to capture traffic"""
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('127.0.0.1', self.port))
+            self.server_socket.bind((self.host, self.port))
             self.server_socket.listen(5)
             self.running = True
             
+            logger.info(f"Proxy server started on {self.host}:{self.port}")
             print(f"🚀 Proxy server started on port {self.port}")
-            print(f"📱 Configure your device/emulator to use proxy: 127.0.0.1:{self.port}")
+            print(f"📱 Configure your device/emulator to use proxy: {self.host}:{self.port}")
             print("🎮 Now start TopHeroes game and perform actions...")
             print("⏹️  Press Ctrl+C to stop and save results")
             
@@ -41,35 +53,53 @@ class TopHeroesAPICatcher:
                     client_socket, address = self.server_socket.accept()
                     client_thread = threading.Thread(
                         target=self.handle_client, 
-                        args=(client_socket, address)
+                        args=(client_socket, address),
+                        daemon=True
                     )
-                    client_thread.daemon = True
                     client_thread.start()
-                except socket.error:
+                except (socket.error, OSError) as e:
+                    logger.warning(f"Socket error: {e}")
                     break
                     
-        except Exception as e:
+        except (socket.error, OSError) as e:
+            logger.error(f"Error starting proxy server: {e}", exc_info=True)
             print(f"❌ Error starting proxy server: {e}")
-    
-    def handle_client(self, client_socket, address):
-        """Xử lý client connection"""
-        try:
-            request_data = client_socket.recv(4096).decode('utf-8')
-            if request_data:
-                self.parse_request(request_data, address)
-                
-                # Forward request to actual server
-                response = self.forward_request(request_data)
-                if response:
-                    client_socket.send(response)
-                    
         except Exception as e:
-            print(f"⚠️ Error handling client {address}: {e}")
-        finally:
-            client_socket.close()
+            logger.error(f"Unexpected error starting proxy server: {e}", exc_info=True)
+            raise
     
-    def parse_request(self, request_data: str, address):
-        """Phân tích HTTP request"""
+    def handle_client(self, client_socket: socket.socket, address: Tuple[str, int]) -> None:
+        """Handle client connection"""
+        try:
+            with self.client_connection(client_socket):
+                request_data = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
+                if request_data:
+                    self.parse_request(request_data, address)
+                    
+                    # Forward request to actual server
+                    response = self.forward_request(request_data)
+                    if response:
+                        client_socket.send(response)
+                        
+        except (socket.error, ConnectionError) as e:
+            logger.warning(f"Error handling client {address}: {e}")
+            print(f"⚠️ Error handling client {address}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error handling client {address}: {e}", exc_info=True)
+    
+    @contextmanager
+    def client_connection(self, client_socket: socket.socket):
+        """Context manager for client socket connection"""
+        try:
+            yield client_socket
+        finally:
+            try:
+                client_socket.close()
+            except socket.error:
+                pass
+    
+    def parse_request(self, request_data: str, address: Tuple[str, int]) -> None:
+        """Parse HTTP request"""
         try:
             lines = request_data.split('\n')
             if not lines:
@@ -77,24 +107,20 @@ class TopHeroesAPICatcher:
                 
             # Parse request line
             request_line = lines[0]
-            method, url, protocol = request_line.split(' ', 2)
+            parts = request_line.split(' ', 2)
+            if len(parts) < 3:
+                return
+                
+            method, url, protocol = parts
             
             # Parse headers
-            headers = {}
-            body_start = 0
-            for i, line in enumerate(lines[1:], 1):
-                if line.strip() == '':
-                    body_start = i + 1
-                    break
-                if ':' in line:
-                    key, value = line.split(':', 1)
-                    headers[key.strip()] = value.strip()
+            headers = self.parse_headers(request_data)
             
             # Parse body
-            body = '\n'.join(lines[body_start:]) if body_start < len(lines) else ''
+            body = self.parse_body(request_data)
             
             # Check if it's TopHeroes related
-            if self.is_topheroes_request(url, headers):
+            if is_topheroes_api(url, headers):
                 api_call = {
                     "timestamp": datetime.now().isoformat(),
                     "method": method,
@@ -106,64 +132,50 @@ class TopHeroesAPICatcher:
                 
                 self.api_calls.append(api_call)
                 self.print_api_call(api_call)
+                logger.debug(f"Captured request: {method} {url}")
                 
-        except Exception as e:
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Error parsing request: {e}")
             print(f"⚠️ Error parsing request: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error parsing request: {e}", exc_info=True)
     
-    def is_topheroes_request(self, url: str, headers: Dict[str, str]) -> bool:
-        """Kiểm tra xem request có phải từ TopHeroes không"""
-        topheroes_keywords = [
-            'topheroes', 'topwar', 'topwarapp', 'game', 'api',
-            'login', 'user', 'player', 'battle', 'mission',
-            'quest', 'reward', 'item', 'shop', 'guild'
-        ]
-        
-        url_lower = url.lower()
-        user_agent = headers.get('User-Agent', '').lower()
-        
-        # Check URL
-        for keyword in topheroes_keywords:
-            if keyword in url_lower:
-                return True
-        
-        # Check User-Agent
-        for keyword in topheroes_keywords:
-            if keyword in user_agent:
-                return True
-                
-        return False
-    
-    def print_api_call(self, api_call: Dict[str, Any]):
-        """In thông tin API call"""
+    def print_api_call(self, api_call: Dict[str, Any]) -> None:
+        """Print API call information"""
         print(f"\n🔍 [{api_call['timestamp']}] {api_call['method']} {api_call['url']}")
         
         # Print important headers
         important_headers = ['Authorization', 'X-API-Key', 'Content-Type', 'User-Agent']
         for header in important_headers:
             if header in api_call['headers']:
-                print(f"   📋 {header}: {api_call['headers'][header]}")
+                value = api_call['headers'][header]
+                if header == 'Authorization':
+                    value = truncate_string(value, 50)
+                print(f"   📋 {header}: {value}")
         
         # Print body if exists
-        if api_call['body']:
-            try:
-                body_json = json.loads(api_call['body'])
-                print(f"   📦 Body: {json.dumps(body_json, indent=2)[:200]}...")
-            except:
-                print(f"   📦 Body: {api_call['body'][:100]}...")
+        if api_call.get('body'):
+            body_json = safe_json_parse(api_call['body'])
+            if body_json:
+                print(f"   📦 Body: {truncate_string(json.dumps(body_json, indent=2), 200)}")
+            else:
+                print(f"   📦 Body: {truncate_string(api_call['body'], 100)}")
     
     def forward_request(self, request_data: str) -> bytes:
         """Forward request to actual server"""
         try:
             lines = request_data.split('\n')
             request_line = lines[0]
-            method, url, protocol = request_line.split(' ', 2)
+            parts = request_line.split(' ', 2)
+            if len(parts) < 3:
+                return b"HTTP/1.1 400 Bad Request\r\n\r\n"
+            
+            method, url, protocol = parts
             
             # Extract host from URL or Host header
             host = None
-            for line in lines[1:]:
-                if line.lower().startswith('host:'):
-                    host = line.split(':', 1)[1].strip()
-                    break
+            headers = self.parse_headers(request_data)
+            host = headers.get('Host', '')
             
             if not host:
                 return b"HTTP/1.1 400 Bad Request\r\n\r\n"
@@ -172,15 +184,19 @@ class TopHeroesAPICatcher:
             response = requests.request(
                 method=method,
                 url=f"http://{host}{url}",
-                headers=self.parse_headers(request_data),
+                headers=headers,
                 data=self.parse_body(request_data),
-                timeout=10
+                timeout=REQUEST_TIMEOUT
             )
             
             return response.content
             
-        except Exception as e:
+        except requests.RequestException as e:
+            logger.warning(f"Error forwarding request: {e}")
             print(f"⚠️ Error forwarding request: {e}")
+            return b"HTTP/1.1 500 Internal Server Error\r\n\r\n"
+        except Exception as e:
+            logger.error(f"Unexpected error forwarding request: {e}", exc_info=True)
             return b"HTTP/1.1 500 Internal Server Error\r\n\r\n"
     
     def parse_headers(self, request_data: str) -> Dict[str, str]:
@@ -209,27 +225,37 @@ class TopHeroesAPICatcher:
         
         return '\n'.join(lines[body_start:]) if body_start < len(lines) else ''
     
-    def save_results(self, filename: str = None):
-        """Lưu kết quả vào file"""
+    def save_results(self, filename: Optional[Path] = None) -> None:
+        """Save captured API calls to file"""
+        if not self.api_calls:
+            logger.info("No API calls captured")
+            print("ℹ️  No API calls captured")
+            return
+        
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"topheroes_api_calls_{timestamp}.json"
+            filename = OUTPUT_DIR / f"{OUTPUT_FILE_PREFIX}_{timestamp}{OUTPUT_FILE_SUFFIX}"
         
         try:
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(self.api_calls, f, indent=2, ensure_ascii=False)
             
+            logger.info(f"Saved {len(self.api_calls)} API calls to {filename}")
             print(f"\n💾 Saved {len(self.api_calls)} API calls to {filename}")
             
             # Create summary
             self.create_summary(filename)
             
-        except Exception as e:
+        except (IOError, OSError) as e:
+            logger.error(f"Error saving results: {e}", exc_info=True)
             print(f"❌ Error saving results: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error saving results: {e}", exc_info=True)
+            raise
     
-    def create_summary(self, filename: str):
-        """Tạo file tóm tắt"""
-        summary_filename = filename.replace('.json', '_summary.txt')
+    def create_summary(self, filename: Path) -> None:
+        """Create summary file"""
+        summary_filename = filename.with_suffix(SUMMARY_FILE_SUFFIX.replace('_', ''))
         
         try:
             with open(summary_filename, 'w', encoding='utf-8') as f:
@@ -263,27 +289,39 @@ class TopHeroesAPICatcher:
                     if header in all_headers:
                         f.write(f"  ✓ {header}\n")
             
+            logger.info(f"Summary saved to {summary_filename}")
             print(f"📊 Summary saved to {summary_filename}")
             
-        except Exception as e:
+        except (IOError, OSError) as e:
+            logger.error(f"Error creating summary: {e}", exc_info=True)
             print(f"⚠️ Error creating summary: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error creating summary: {e}", exc_info=True)
+            raise
     
-    def stop(self):
-        """Dừng proxy server"""
+    def stop(self) -> None:
+        """Stop proxy server"""
         self.running = False
         if self.server_socket:
-            self.server_socket.close()
+            try:
+                self.server_socket.close()
+            except socket.error:
+                pass
+        logger.info("Proxy server stopped")
         print("\n⏹️  Proxy server stopped")
 
-def main():
+def main() -> None:
+    """Main entry point"""
     print("🎮 TopHeroes API Catcher Tool")
     print("=" * 40)
     
     # Get port from user
     try:
-        port = int(input("Enter proxy port (default 8080): ") or "8080")
+        port_input = input(f"Enter proxy port (default {DEFAULT_PROXY_PORT}): ") or str(DEFAULT_PROXY_PORT)
+        port = int(port_input)
     except ValueError:
-        port = 8080
+        logger.warning(f"Invalid port input, using default: {DEFAULT_PROXY_PORT}")
+        port = DEFAULT_PROXY_PORT
     
     catcher = TopHeroesAPICatcher(port)
     
@@ -291,6 +329,7 @@ def main():
         # Start proxy server
         catcher.start_proxy_server()
     except KeyboardInterrupt:
+        logger.info("Received interrupt signal")
         print("\n\n🛑 Stopping...")
         catcher.stop()
         

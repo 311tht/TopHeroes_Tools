@@ -249,6 +249,7 @@ def main():
     
     # Tìm file API calls mới nhất
     import glob
+    import os
     api_files = glob.glob("topheroes_api_calls_*.json")
     
     if not api_files:
@@ -267,5 +268,4 @@ def main():
     tester.run_comprehensive_test(latest_file)
 
 if __name__ == "__main__":
-    import os
     main()

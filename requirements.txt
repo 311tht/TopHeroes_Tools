@@ -1,0 +1,23 @@
+# TopHeroes Tools - Requirements
+
+# Core dependencies
+python>=3.8
+
+# API Catcher Tools
+mitmproxy>=11.0.0
+requests>=2.28.0
+
+# Auto Clicker Tools
+PyQt5>=5.15.0
+pyautogui>=0.9.54
+opencv-python>=4.8.0
+
+# Email Verifier
+# Note: Uses only standard library (tkinter, imaplib, email)
+
+# Optional development tools
+# pytest>=7.0.0
+# black>=23.0.0
+# isort>=5.12.0
+# mypy>=1.0.0
+

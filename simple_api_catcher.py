@@ -1,33 +1,50 @@
 #!/usr/bin/env python3
 """
 TopHeroes Simple API Catcher
-Bắt API calls đơn giản không cần SSL certificate
+Simple API catcher without SSL certificate requirements
 """
 
 import socket
 import threading
 import json
-import time
 from datetime import datetime
-import re
+from typing import Dict, List, Any, Tuple, Optional
+from pathlib import Path
+from contextlib import contextmanager
+
+# Common modules
+from common.filters import is_topheroes_api
+from common.config import (
+    DEFAULT_PROXY_PORT, DEFAULT_PROXY_HOST, BUFFER_SIZE,
+    OUTPUT_DIR, OUTPUT_FILE_PREFIX, OUTPUT_FILE_SUFFIX, SUMMARY_FILE_SUFFIX
+)
+from common.utils import safe_json_parse, truncate_string
+from common.logger import setup_logger
+
+logger = setup_logger(__name__)
+
 
 class SimpleAPICatcher:
-    def __init__(self, port=8080):
+    def __init__(self, port: int = DEFAULT_PROXY_PORT, host: str = DEFAULT_PROXY_HOST):
         self.port = port
-        self.api_calls = []
+        self.host = host
+        self.api_calls: List[Dict[str, Any]] = []
         self.running = False
+        logger.info(f"SimpleAPICatcher initialized on {host}:{port}")
         
-    def start_server(self):
-        """Khởi động HTTP proxy server"""
+    def start_server(self) -> None:
+        """Start HTTP proxy server"""
+        server_socket = None
         try:
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server_socket.bind(('127.0.0.1', self.port))
+            server_socket.bind((self.host, self.port))
             server_socket.listen(5)
             self.running = True
             
+            logger.info(f"Simple API Catcher started on {self.host}:{self.port}")
             print(f"🚀 Simple API Catcher started on port {self.port}")
-            print(f"📱 Configure proxy: 127.0.0.1:{self.port}")
+            print(f"📱 Configure proxy: {self.host}:{self.port}")
             print("🎮 Play TopHeroes now!")
             print("⏹️  Press Ctrl+C to stop")
             
@@ -36,36 +53,58 @@ class SimpleAPICatcher:
                     client_socket, address = server_socket.accept()
                     client_thread = threading.Thread(
                         target=self.handle_client,
-                        args=(client_socket, address)
+                        args=(client_socket, address),
+                        daemon=True
                     )
-                    client_thread.daemon = True
                     client_thread.start()
-                except socket.error:
+                except (socket.error, OSError) as e:
+                    logger.warning(f"Socket error: {e}")
                     break
                     
-        except Exception as e:
+        except (socket.error, OSError) as e:
+            logger.error(f"Error starting server: {e}", exc_info=True)
             print(f"❌ Error: {e}")
-        finally:
-            server_socket.close()
-    
-    def handle_client(self, client_socket, address):
-        """Xử lý client connection"""
-        try:
-            request_data = client_socket.recv(4096).decode('utf-8', errors='ignore')
-            if request_data:
-                self.parse_and_log_request(request_data, address)
-                
-                # Trả về response đơn giản
-                response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\nOK"
-                client_socket.send(response.encode())
-                
         except Exception as e:
-            print(f"⚠️ Error handling client: {e}")
+            logger.error(f"Unexpected error starting server: {e}", exc_info=True)
+            raise
         finally:
-            client_socket.close()
+            if server_socket:
+                try:
+                    server_socket.close()
+                except socket.error:
+                    pass
     
-    def parse_and_log_request(self, request_data, address):
-        """Phân tích và log request"""
+    def handle_client(self, client_socket: socket.socket, address: Tuple[str, int]) -> None:
+        """Handle client connection"""
+        try:
+            with self.client_connection(client_socket):
+                request_data = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
+                if request_data:
+                    self.parse_and_log_request(request_data, address)
+                    
+                    # Return simple response
+                    response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\nOK"
+                    client_socket.send(response.encode())
+                    
+        except (socket.error, ConnectionError) as e:
+            logger.warning(f"Error handling client {address}: {e}")
+            print(f"⚠️ Error handling client: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error handling client {address}: {e}", exc_info=True)
+    
+    @contextmanager
+    def client_connection(self, client_socket: socket.socket):
+        """Context manager for client socket connection"""
+        try:
+            yield client_socket
+        finally:
+            try:
+                client_socket.close()
+            except socket.error:
+                pass
+    
+    def parse_and_log_request(self, request_data: str, address: Tuple[str, int]) -> None:
+        """Parse and log request"""
         try:
             lines = request_data.split('\n')
             if not lines:
@@ -73,30 +112,20 @@ class SimpleAPICatcher:
                 
             # Parse request line
             request_line = lines[0]
-            parts = request_line.split(' ')
+            parts = request_line.split(' ', 2)
             if len(parts) < 3:
                 return
                 
-            method = parts[0]
-            url = parts[1]
-            protocol = parts[2]
+            method, url, protocol = parts
             
             # Parse headers
-            headers = {}
-            body_start = 0
-            for i, line in enumerate(lines[1:], 1):
-                if line.strip() == '':
-                    body_start = i + 1
-                    break
-                if ':' in line:
-                    key, value = line.split(':', 1)
-                    headers[key.strip()] = value.strip()
+            headers = self.parse_headers(request_data)
             
             # Parse body
-            body = '\n'.join(lines[body_start:]) if body_start < len(lines) else ''
+            body = self.parse_body(request_data)
             
-            # Kiểm tra xem có phải TopHeroes không
-            if self.is_topheroes_request(url, headers):
+            # Check if it's TopHeroes request
+            if is_topheroes_api(url, headers):
                 api_call = {
                     "timestamp": datetime.now().isoformat(),
                     "method": method,
@@ -108,80 +137,93 @@ class SimpleAPICatcher:
                 
                 self.api_calls.append(api_call)
                 self.print_api_call(api_call)
+                logger.debug(f"Captured request: {method} {url}")
                 
-        except Exception as e:
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Error parsing request: {e}")
             print(f"⚠️ Error parsing request: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error parsing request: {e}", exc_info=True)
     
-    def is_topheroes_request(self, url, headers):
-        """Kiểm tra xem có phải TopHeroes request không"""
-        topheroes_keywords = [
-            'topheroes', 'topwar', 'topwarapp', 'tophero-cdn',
-            'game', 'api', 'login', 'user', 'player', 'battle',
-            'mission', 'quest', 'reward', 'item', 'shop', 'guild'
-        ]
+    def parse_headers(self, request_data: str) -> Dict[str, str]:
+        """Parse headers from request"""
+        headers = {}
+        lines = request_data.split('\n')
         
-        url_lower = url.lower()
-        user_agent = headers.get('User-Agent', '').lower()
-        host = headers.get('Host', '').lower()
+        for line in lines[1:]:
+            if line.strip() == '':
+                break
+            if ':' in line:
+                key, value = line.split(':', 1)
+                headers[key.strip()] = value.strip()
         
-        # Kiểm tra URL
-        for keyword in topheroes_keywords:
-            if keyword in url_lower:
-                return True
-        
-        # Kiểm tra Host header
-        for keyword in topheroes_keywords:
-            if keyword in host:
-                return True
-                
-        # Kiểm tra User-Agent
-        for keyword in topheroes_keywords:
-            if keyword in user_agent:
-                return True
-                
-        return False
+        return headers
     
-    def print_api_call(self, api_call):
-        """In thông tin API call"""
+    def parse_body(self, request_data: str) -> str:
+        """Parse body from request"""
+        lines = request_data.split('\n')
+        body_start = 0
+        
+        for i, line in enumerate(lines[1:], 1):
+            if line.strip() == '':
+                body_start = i + 1
+                break
+        
+        return '\n'.join(lines[body_start:]) if body_start < len(lines) else ''
+    
+    def print_api_call(self, api_call: Dict[str, Any]) -> None:
+        """Print API call information"""
         print(f"\n🔍 [{api_call['timestamp']}] {api_call['method']} {api_call['url']}")
         
-        # In headers quan trọng
+        # Print important headers
         important_headers = ['Host', 'User-Agent', 'Authorization', 'Content-Type', 'Cookie']
         for header in important_headers:
             if header in api_call['headers']:
                 value = api_call['headers'][header]
-                if len(value) > 100:
-                    value = value[:100] + "..."
+                if header == 'Authorization':
+                    value = truncate_string(value, 50)
+                else:
+                    value = truncate_string(value, 100)
                 print(f"   📋 {header}: {value}")
         
-        # In body nếu có
-        if api_call['body']:
-            print(f"   📦 Body: {api_call['body'][:200]}...")
+        # Print body if exists
+        if api_call.get('body'):
+            body_json = safe_json_parse(api_call['body'])
+            if body_json:
+                print(f"   📦 Body: {truncate_string(json.dumps(body_json, indent=2), 200)}")
+            else:
+                print(f"   📦 Body: {truncate_string(api_call['body'], 200)}")
     
-    def save_results(self):
-        """Lưu kết quả"""
+    def save_results(self) -> None:
+        """Save captured API calls to file"""
         if not self.api_calls:
+            logger.info("No API calls captured")
             print("ℹ️  No API calls captured")
             return
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"topheroes_api_calls_{timestamp}.json"
+        filename = OUTPUT_DIR / f"{OUTPUT_FILE_PREFIX}_{timestamp}{OUTPUT_FILE_SUFFIX}"
         
         try:
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(self.api_calls, f, indent=2, ensure_ascii=False)
             
+            logger.info(f"Saved {len(self.api_calls)} API calls to {filename}")
             print(f"\n💾 Saved {len(self.api_calls)} API calls to {filename}")
             
-            # Tạo summary
+            # Create summary
             self.create_summary(filename)
             
-        except Exception as e:
+        except (IOError, OSError) as e:
+            logger.error(f"Error saving: {e}", exc_info=True)
             print(f"❌ Error saving: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error saving: {e}", exc_info=True)
+            raise
     
-    def create_summary(self, filename):
-        """Tạo file tóm tắt"""
-        summary_filename = filename.replace('.json', '_summary.txt')
+    def create_summary(self, filename: Path) -> None:
+        """Create summary file"""
+        summary_filename = filename.with_suffix(SUMMARY_FILE_SUFFIX.replace('_', ''))
         
         try:
             with open(summary_filename, 'w', encoding='utf-8') as f:
@@ -217,16 +259,23 @@ class SimpleAPICatcher:
                 for host in sorted(hosts):
                     f.write(f"  {host}\n")
             
+            logger.info(f"Summary saved to {summary_filename}")
             print(f"📊 Summary saved to {summary_filename}")
             
-        except Exception as e:
+        except (IOError, OSError) as e:
+            logger.error(f"Error creating summary: {e}", exc_info=True)
             print(f"⚠️ Error creating summary: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error creating summary: {e}", exc_info=True)
+            raise
     
-    def stop(self):
-        """Dừng server"""
+    def stop(self) -> None:
+        """Stop server"""
         self.running = False
+        logger.info("Server stopped")
 
-def main():
+def main() -> None:
+    """Main entry point"""
     print("🎮 TopHeroes Simple API Catcher")
     print("=" * 40)
     
@@ -235,6 +284,7 @@ def main():
     try:
         catcher.start_server()
     except KeyboardInterrupt:
+        logger.info("Received interrupt signal")
         print("\n\n🛑 Stopping...")
         catcher.stop()
         catcher.save_results()
